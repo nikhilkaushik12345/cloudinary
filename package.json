@@ -1,0 +1,11 @@
+{
+  "name": "cloudinary-oauth-render",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  }
+}
