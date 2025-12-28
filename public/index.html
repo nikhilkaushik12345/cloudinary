@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login with Cloudinary</title>
+<script>
+function getAuthorizationCodeFromUrl() {
+  const urlParams = new URLSearchParams(window.location.search);
+  return urlParams.get('code');
+}
+
+function loginWithCloudinary() {
+  const authUrl =
+    "https://asset-management.mcp.cloudinary.com/authorize" +
+    "?client_id=mcp_client_rM70VlFBDSBz67fy" +
+    "&redirect_uri=" + encodeURIComponent("https://google.com/callback") +
+    "&response_type=code" +
+    "&code_challenge=KvifpPaokX4NX3fTbLxnhhpXPZdxx-7k2asvNG_SdbI" +
+    "&code_challenge_method=S256";
+  window.location.href = authUrl;
+}
+
+async function getAccessToken(code) {
+  try {
+    const res = await fetch("/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    document.getElementById("authorization-code").textContent = "Access Token Processed";
+    document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    document.getElementById("authorization-code").textContent = "Error: " + err;
+  }
+}
+
+window.onload = () => {
+  const code = getAuthorizationCodeFromUrl();
+  if (!code) {
+    loginWithCloudinary();
+    return;
+  }
+  document.getElementById("authorization-code").textContent = "Authorization Code: " + code;
+  getAccessToken(code);
+};
+</script>
+</head>
+<body>
+<h1>Login with Cloudinary</h1>
+<button onclick="loginWithCloudinary()">Login</button>
+<p id="authorization-code"></p>
+<h2>User Information</h2>
+<pre id="user-info"></pre>
+</body>
+</html>
