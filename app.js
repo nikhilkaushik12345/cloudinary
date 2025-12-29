@@ -11,15 +11,26 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public"))); // serves index.html
 
+// Only allow POST for /exchange
+app.all("/exchange", (req, res, next) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed. Use POST with JSON body." });
+  }
+  next();
+});
+
 // OAuth callback
 app.get("/callback", (req, res) => {
   res.redirect("/?code=" + req.query.code);
 });
 
-// Exchange code + call Cloudinary MCP
+// Exchange code for access token
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: "Missing authorization code in request body." });
+    }
 
     const params = new URLSearchParams();
     params.append("grant_type", "authorization_code");
@@ -29,6 +40,7 @@ app.post("/exchange", async (req, res) => {
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
+    // Fetch token from Cloudinary
     const tokenRes = await fetch("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
       headers: {
@@ -39,17 +51,16 @@ app.post("/exchange", async (req, res) => {
     });
 
     const text = await tokenRes.text(); // parse as text first
-
     let token;
     try {
-      token = JSON.parse(text); // try JSON parse
+      token = JSON.parse(text);
     } catch (err) {
       return res.status(500).json({ error: "Failed to parse JSON from Cloudinary", raw: text });
     }
 
     if (!token.access_token) return res.status(400).json(token);
 
-    // Example API call using the access token
+    // Example API call using access token
     const folderRes = await fetch("https://asset-management.mcp.cloudinary.com/v1/folders", {
       method: "GET",
       headers: {
