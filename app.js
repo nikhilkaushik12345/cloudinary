@@ -66,6 +66,7 @@ async function fetchMcpTools(accessToken) {
       res.on("data", async (chunk) => {
         const text = chunk.toString();
         
+        // Only trigger once
         if (!handshakeStarted && text.includes("event: endpoint")) {
            const lines = text.split("\n");
            const dataLine = lines.find(l => l.startsWith("data:"));
@@ -122,16 +123,20 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
-  if (initRes.status >= 400) throw new Error(`Init failed: ${initRes.body}`);
+  
+  // LOGGING: Check Initialize Response
+  if (initRes.status >= 400) {
+      throw new Error(`Init failed (${initRes.status}): ${initRes.body}`);
+  }
 
-  // Step B: Send Initialized Notification (FIXED: Don't parse JSON)
+  // Step B: Send Initialized Notification
   console.log("4. Sending initialized notification...");
   await httpRequest(endpoint, { 
     method: "POST", 
     headers, 
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
   });
-  // Note: We intentionally IGNORE the response body here because it might be "Accepted"
+  // We ignore response here as it's often empty or "Accepted"
 
   // Step C: List Tools
   console.log("5. Sending tools/list...");
@@ -143,11 +148,21 @@ async function performMcpHandshake(endpoint, token) {
 
   const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
   
-  // Handle non-JSON response for tools list too, just in case
+  console.log("6. Tools response received. Status:", listRes.status);
+  
   try {
       return JSON.parse(listRes.body);
   } catch (e) {
-      throw new Error(`Failed to parse tools list: ${listRes.body.substring(0, 100)}...`);
+      // ENHANCED ERROR: Return full body + status + headers for debugging
+      console.error("Failed to parse tools list body:", listRes.body);
+      
+      const debugInfo = JSON.stringify({
+          status: listRes.status,
+          headers: listRes.headers,
+          body_preview: listRes.body // Returns FULL body now
+      }, null, 2);
+      
+      throw new Error(`Failed to parse tools list. Response from server:\n${debugInfo}`);
   }
 }
 
@@ -208,6 +223,7 @@ app.post("/list-tools", async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("MCP Error:", err);
+    // Send full error message to frontend
     res.status(500).json({ error: err.message });
   }
 });
