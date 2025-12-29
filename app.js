@@ -24,7 +24,7 @@ app.get("/callback", (req, res) => {
   res.redirect("/?code=" + req.query.code);
 });
 
-// Exchange code for access token
+// Exchange code for access token - FIXED VERSION
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
@@ -40,7 +40,9 @@ app.post("/exchange", async (req, res) => {
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
-    // Fetch token from Cloudinary
+    console.log("Token request body:", params.toString()); // Debug log
+
+    // Fetch token from Cloudinary - FIXED: Check status and handle errors properly
     const tokenRes = await fetch("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
       headers: {
@@ -50,29 +52,48 @@ app.post("/exchange", async (req, res) => {
       body: params.toString()
     });
 
-    const text = await tokenRes.text(); // parse as text first
-    let token;
-    try {
-      token = JSON.parse(text);
-    } catch (err) {
-      return res.status(500).json({ error: "Failed to parse JSON from Cloudinary", raw: text });
+    // CRITICAL FIX: Check if response is ok BEFORE parsing
+    if (!tokenRes.ok) {
+      const errorText = await tokenRes.text();
+      console.log("Token endpoint error status:", tokenRes.status, "response:", errorText);
+      return res.status(tokenRes.status).json({ 
+        error: "Token exchange failed", 
+        status: tokenRes.status, 
+        response: errorText 
+      });
     }
 
-    if (!token.access_token) return res.status(400).json(token);
+    const tokenData = await tokenRes.json();
+    console.log("Token response:", tokenData); // Debug log
+
+    if (!tokenData.access_token) {
+      return res.status(400).json({ error: "No access token received", token_response: tokenData });
+    }
 
     // Example API call using access token
     const folderRes = await fetch("https://asset-management.mcp.cloudinary.com/v1/folders", {
       method: "GET",
       headers: {
-        "Authorization": `Bearer ${token.access_token}`,
+        "Authorization": `Bearer ${tokenData.access_token}`,
         "Accept": "application/json"
       }
     });
+
+    if (!folderRes.ok) {
+      const folderError = await folderRes.text();
+      return res.status(400).json({ 
+        error: "Folders API failed", 
+        status: folderRes.status, 
+        token_received: true,
+        response: folderError 
+      });
+    }
 
     const folderData = await folderRes.json();
     res.json(folderData);
 
   } catch (err) {
+    console.error("Exchange endpoint error:", err);
     res.status(500).json({ error: err.message });
   }
 });
