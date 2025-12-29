@@ -45,15 +45,17 @@ function httpRequest(url, options = {}) {
 async function fetchMcpTools(accessToken) {
   return new Promise((resolve, reject) => {
     const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
-    
     console.log("1. Starting SSE connection to:", sseUrl);
+
+    let handshakeStarted = false; // Prevent multiple triggers
 
     const req = https.request(sseUrl, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "text/event-stream",
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache",
+        "User-Agent": "Mozilla/5.0 (compatible; CloudinaryMcpClient/1.0)"
       }
     }, (res) => {
       if (res.statusCode !== 200) {
@@ -62,29 +64,32 @@ async function fetchMcpTools(accessToken) {
 
       res.on("data", async (chunk) => {
         const text = chunk.toString();
-        // Check for the endpoint event
-        if (text.includes("event: endpoint")) {
+        
+        // Look for the endpoint event
+        if (!handshakeStarted && text.includes("event: endpoint")) {
            const lines = text.split("\n");
            const dataLine = lines.find(l => l.startsWith("data:"));
            
            if (dataLine) {
+             handshakeStarted = true; // Lock it so we don't try twice
+             
              const uri = dataLine.replace("data:", "").trim();
-             // Construct full URL
              const postEndpoint = uri.startsWith("http") 
                ? uri 
                : `https://asset-management.mcp.cloudinary.com${uri}`;
              
              console.log("2. Found MCP Endpoint:", postEndpoint);
              
-             // Stop listening to SSE once we have the endpoint
-             req.destroy(); 
-             
-             // Perform the handshake
+             // CRITICAL FIX: We perform the handshake *inside* the SSE callback
+             // and ONLY destroy the connection AFTER we have the tools.
              try {
                const tools = await performMcpHandshake(postEndpoint, accessToken);
-               resolve(tools);
+               resolve(tools); // Send data back to frontend
              } catch (e) {
                reject(e);
+             } finally {
+               console.log("7. Closing SSE connection.");
+               req.destroy(); // NOW it is safe to close
              }
            }
         }
@@ -92,8 +97,7 @@ async function fetchMcpTools(accessToken) {
     });
     
     req.on("error", (err) => {
-        console.error("SSE Request Error:", err);
-        reject(err);
+        if (!handshakeStarted) reject(err);
     });
     
     req.end();
@@ -120,7 +124,10 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
-  if (initRes.status >= 400) throw new Error(`Initialize failed: ${initRes.body}`);
+  
+  if (initRes.status >= 400) {
+      throw new Error(`Initialize failed: ${initRes.body}`);
+  }
 
   // Step B: Send Initialized Notification
   console.log("4. Sending 'notifications/initialized'...");
@@ -163,7 +170,6 @@ app.post("/exchange", async (req, res) => {
     params.append("client_id", "mcp_client_Qr1NLTYTBYCOYW4h");
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
-
     const body = params.toString();
 
     const tokenResp = await httpRequest("https://asset-management.mcp.cloudinary.com/token", {
@@ -186,8 +192,6 @@ app.post("/exchange", async (req, res) => {
     }
 
     const tokenData = JSON.parse(tokenResp.body);
-    
-    // Return access token only
     res.json({
       success: true,
       access_token: tokenData.access_token,
