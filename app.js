@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // serves index.html
+app.use(express.static(path.join(__dirname, "public")));
 
 // Only allow POST for /exchange
 app.all("/exchange", (req, res, next) => {
@@ -24,7 +24,7 @@ app.get("/callback", (req, res) => {
   res.redirect("/?code=" + req.query.code);
 });
 
-// Exchange code for access token - FIXED VERSION
+// Exchange code for access token - SIMPLIFIED TO FETCH ACCESS_TOKEN ONLY
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
@@ -40,9 +40,9 @@ app.post("/exchange", async (req, res) => {
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
-    console.log("Token request body:", params.toString()); // Debug log
+    console.log("Token request body:", params.toString());
 
-    // Fetch token from Cloudinary - FIXED: Check status and handle errors properly
+    // Fetch token from Cloudinary
     const tokenRes = await fetch("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
       headers: {
@@ -52,45 +52,48 @@ app.post("/exchange", async (req, res) => {
       body: params.toString()
     });
 
-    // CRITICAL FIX: Check if response is ok BEFORE parsing
-    if (!tokenRes.ok) {
-      const errorText = await tokenRes.text();
-      console.log("Token endpoint error status:", tokenRes.status, "response:", errorText);
-      return res.status(tokenRes.status).json({ 
-        error: "Token exchange failed", 
-        status: tokenRes.status, 
-        response: errorText 
+    // Get raw text FIRST to debug
+    const rawResponse = await tokenRes.text();
+    console.log("Raw token response:", rawResponse);
+    console.log("Token response status:", tokenRes.status);
+
+    // Check if it's HTML error page
+    if (rawResponse.includes("<!DOCTYPE") || rawResponse.includes("<html")) {
+      console.error("HTML error page received from Cloudinary:", rawResponse.substring(0, 200));
+      return res.status(502).json({ 
+        error: "Cloudinary returned HTML error page", 
+        status: tokenRes.status,
+        raw_response: rawResponse.substring(0, 500)
       });
     }
 
-    const tokenData = await tokenRes.json();
-    console.log("Token response:", tokenData); // Debug log
+    // Parse JSON
+    let tokenData;
+    try {
+      tokenData = JSON.parse(rawResponse);
+    } catch (parseErr) {
+      console.error("JSON parse error:", parseErr.message);
+      return res.status(502).json({ 
+        error: "Invalid JSON from Cloudinary", 
+        raw_response: rawResponse.substring(0, 500)
+      });
+    }
 
+    // Extract JUST the access token as requested
     if (!tokenData.access_token) {
-      return res.status(400).json({ error: "No access token received", token_response: tokenData });
-    }
-
-    // Example API call using access token
-    const folderRes = await fetch("https://asset-management.mcp.cloudinary.com/v1/folders", {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${tokenData.access_token}`,
-        "Accept": "application/json"
-      }
-    });
-
-    if (!folderRes.ok) {
-      const folderError = await folderRes.text();
       return res.status(400).json({ 
-        error: "Folders API failed", 
-        status: folderRes.status, 
-        token_received: true,
-        response: folderError 
+        error: "No access_token in response", 
+        full_response: tokenData 
       });
     }
 
-    const folderData = await folderRes.json();
-    res.json(folderData);
+    // SUCCESS: Return ONLY the access token
+    res.json({ 
+      access_token: tokenData.access_token,
+      token_type: tokenData.token_type,
+      expires_in: tokenData.expires_in,
+      scope: tokenData.scope
+    });
 
   } catch (err) {
     console.error("Exchange endpoint error:", err);
