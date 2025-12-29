@@ -40,7 +40,8 @@ function httpRequest(url, options = {}) {
   });
 }
 
-// --- Helper: Generic MCP Tool Runner (SSE Logic) ---
+// --- Helper: Generic MCP Tool Runner ---
+// Connects to SSE, performs handshake, runs a SPECIFIC tool, and returns result.
 async function runMcpTool(accessToken, toolName, toolArgs) {
   return new Promise((resolve, reject) => {
     const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
@@ -49,6 +50,7 @@ async function runMcpTool(accessToken, toolName, toolArgs) {
     let toolResolved = false;
     let buffer = "";
 
+    // 1. Open SSE Connection
     sseReq = https.request(sseUrl, {
       method: "GET",
       headers: {
@@ -70,14 +72,13 @@ async function runMcpTool(accessToken, toolName, toolArgs) {
           if (line.startsWith("data:")) {
              const dataStr = line.replace("data:", "").trim();
              
-             // STAGE 1: Find Endpoint
+             // STAGE 1: Find Endpoint & Initialize
              if (!handshakeStarted) {
                  if (dataStr.startsWith("/")) {
                    handshakeStarted = true;
                    const postEndpoint = `https://asset-management.mcp.cloudinary.com${dataStr}`;
                    
                    try {
-                     // Trigger Handshake + Specific Tool Call
                      await triggerToolCall(postEndpoint, accessToken, toolName, toolArgs);
                    } catch (e) {
                      reject(e);
@@ -85,7 +86,7 @@ async function runMcpTool(accessToken, toolName, toolArgs) {
                    }
                  }
              } 
-             // STAGE 2: Listen for Result (ID: 2)
+             // STAGE 2: Listen for Tool Result (ID: 2)
              else {
                 try {
                    const json = JSON.parse(dataStr);
@@ -104,35 +105,36 @@ async function runMcpTool(accessToken, toolName, toolArgs) {
     });
     
     sseReq.on("error", (err) => { if (!toolResolved) reject(err); });
+    // Timeout safety
     setTimeout(() => { 
         if (!toolResolved) { 
             sseReq.destroy(); 
-            reject(new Error("Timeout waiting for tool response")); 
+            reject(new Error(`Timeout waiting for tool ${toolName}`)); 
         }
-    }, 15000); // 15s timeout for tools
+    }, 20000); 
     sseReq.end();
   });
 }
 
-// Helper: Fire handshake + Specific Tool Call
+// Helper: Fire handshake + Tool Call
 async function triggerToolCall(endpoint, token, toolName, args) {
   const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
 
-  // Handshake (Initialize)
+  // 1. Initialize
   const initBody = JSON.stringify({
     jsonrpc: "2.0", method: "initialize",
-    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test-client", version: "1.0" } },
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "cleanup-client", version: "1.0" } },
     id: 1
   });
   await httpRequest(endpoint, { method: "POST", headers, body: initBody });
 
-  // Handshake (Notification)
+  // 2. Initialized Notification
   await httpRequest(endpoint, { 
     method: "POST", headers, 
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
   });
 
-  // Execute Specific Tool (ID: 2)
+  // 3. Execute Tool (ID: 2)
   const toolBody = JSON.stringify({
     jsonrpc: "2.0",
     method: "tools/call",
@@ -151,7 +153,7 @@ app.get("/callback", (req, res) => {
   res.redirect("/?code=" + req.query.code);
 });
 
-// 1. Exchange Code for Token
+// OAuth: Exchange Code for Token
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
@@ -183,112 +185,87 @@ app.post("/exchange", async (req, res) => {
   }
 });
 
-// 2. List Tools (Just lists them, doesn't run cleanup)
-app.post("/list-tools", async (req, res) => {
-  const { access_token } = req.body;
-  if (!access_token) return res.status(400).json({ error: "Missing access_token" });
-
-  try {
-    // We can reuse runMcpTool logic, but we need to trigger 'tools/list' instead of 'tools/call'
-    // For simplicity, we'll keep the specialized fetchMcpTools logic here inline or reuse the generic one if adapted.
-    // To match your exact request to "do this" (cleanup), this endpoint might not be the primary focus, 
-    // but I'll leave it functional by calling the generic runner with a special 'list' flag or just re-implementing briefly.
-    
-    // Quick inline implementation reusing the generic structure but sending 'tools/list'
-    const result = await new Promise((resolve, reject) => {
-        const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
-        let handshakeStarted = false;
-        let sseReq;
-        let toolResolved = false;
-        let buffer = "";
-
-        sseReq = https.request(sseUrl, { method: "GET", headers: { "Authorization": `Bearer ${access_token}`, "Accept": "text/event-stream" } }, (r) => {
-             r.on("data", async (c) => {
-                buffer += c.toString();
-                let idx; while ((idx = buffer.indexOf("\n")) !== -1) {
-                    const line = buffer.substring(0, idx).trim(); buffer = buffer.substring(idx+1);
-                    if (line.startsWith("data:")) {
-                        const d = line.replace("data:", "").trim();
-                        if (!handshakeStarted && d.startsWith("/")) {
-                            handshakeStarted = true;
-                            const ep = `https://asset-management.mcp.cloudinary.com${d}`;
-                            // Trigger List
-                             const h = { "Content-Type": "application/json", "Authorization": `Bearer ${access_token}` };
-                             const init = JSON.stringify({ jsonrpc: "2.0", method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1.0" } }, id: 1 });
-                             await httpRequest(ep, { method: "POST", headers: h, body: init });
-                             await httpRequest(ep, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
-                             await httpRequest(ep, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 2 }) });
-                        } else {
-                            try { const j = JSON.parse(d); if (j.id === 2) { resolve(j.result); toolResolved = true; sseReq.destroy(); } } catch (e) {}
-                        }
-                    }
-                }
-             });
-        });
-        sseReq.end();
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 3. CLEANUP FOLDERS (The main task)
+// MAIN: Cleanup Folders Endpoint
 app.post("/cleanup-folders", async (req, res) => {
   const { access_token } = req.body;
   if (!access_token) return res.status(400).json({ error: "Missing access_token" });
 
   try {
-    // A. Search for folders
-    console.log("Step 1: Searching for folders...");
+    // --- Step 1: Search for Folders ---
+    console.log("Starting Cleanup: Searching folders...");
     const searchResult = await runMcpTool(access_token, "search-folders", {
       sort_by: [],
       max_results: 50,
       next_cursor: ""
     });
 
-    // Handle tool output structure
     let folders = [];
+    let searchRaw = "";
+    
+    // MCP tool returns text content, often as JSON string
     if (searchResult && searchResult.content && searchResult.content[0]) {
+        searchRaw = searchResult.content[0].text;
         try {
-            const parsed = JSON.parse(searchResult.content[0].text);
+            const parsed = JSON.parse(searchRaw);
             folders = parsed.folders || [];
         } catch (e) {
-            console.error("Failed to parse search output:", searchResult.content[0].text);
+            console.error("Parse Error for Search Result:", e);
+            // Fallback: If not JSON, maybe just log it
         }
     }
 
     if (folders.length === 0) {
-      return res.json({ message: "No folders found to delete.", raw_result: searchResult });
+      return res.json({ 
+        message: "No folders found to delete.", 
+        folders_found: [], 
+        deletion_report: [] 
+      });
     }
 
     const folderNames = folders.map(f => f.path);
-    console.log(`Step 2: Found ${folderNames.length} folders:`, folderNames);
+    console.log(`Found ${folderNames.length} folders to delete:`, folderNames);
 
-    // B. Delete each folder
+    // --- Step 2: Delete Each Folder ---
     const deletionResults = [];
     
     for (const folderName of folderNames) {
       try {
         console.log(`Deleting: ${folderName}`);
+        
+        // Call delete-folder tool
         const delRes = await runMcpTool(access_token, "delete-folder", { folder: folderName });
+        
+        // Extract status message
         const statusText = delRes.content && delRes.content[0] ? delRes.content[0].text : "Done";
         
-        deletionResults.push({ folder: folderName, status: "Success", details: statusText });
+        deletionResults.push({ 
+          folder: folderName, 
+          status: "Success", 
+          details: statusText 
+        });
+        
+        // Small delay to be polite to the server
+        await new Promise(r => setTimeout(r, 500));
+
       } catch (err) {
-        deletionResults.push({ folder: folderName, status: "Failed", error: err.message });
+        console.error(`Failed to delete ${folderName}:`, err.message);
+        deletionResults.push({ 
+          folder: folderName, 
+          status: "Failed", 
+          error: err.message 
+        });
       }
     }
 
-    // C. Return Report
+    // --- Step 3: Return Final Report ---
     res.json({
       folders_found: folders,
       deletion_report: deletionResults
     });
 
   } catch (err) {
-    console.error("Cleanup Error:", err);
-    res.status(500).json({ error: "Cleanup failed", details: err.message });
+    console.error("Cleanup Fatal Error:", err);
+    res.status(500).json({ error: "Cleanup sequence failed", details: err.message });
   }
 });
 
