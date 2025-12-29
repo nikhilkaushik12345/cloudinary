@@ -25,11 +25,12 @@ app.post("/exchange", async (req, res) => {
     params.append("grant_type", "authorization_code");
     params.append("code", code);
 
-    // STATIC redirect_uri for Cloudinary
-    params.append("redirect_uri", "https://google.com/callback");
+    // Updated redirect_uri for new client
+    params.append("redirect_uri", "https://cloudinary-2w50.onrender.com/callback");
 
-    params.append("client_id", "mcp_client_rM70VlFBDSBz67fy");
-    params.append("client_secret", "OsvAgure9OHqmylNd1SMHabeNzvuckH2");
+    // Updated client credentials
+    params.append("client_id", "mcp_client_Qr1NLTYTBYCOYW4h");
+    params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
     // 1️⃣ Exchange authorization code for access token
