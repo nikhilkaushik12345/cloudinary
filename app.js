@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import https from "https";
-import zlib from "zlib";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +48,10 @@ async function fetchMcpTools(accessToken) {
 
     let handshakeStarted = false;
     let sseReq;
+    let postEndpoint = null;
+    let toolsResolved = false; // Flag to prevent multi-resolve
+
+    let buffer = "";
 
     sseReq = https.request(sseUrl, {
       method: "GET",
@@ -64,46 +67,80 @@ async function fetchMcpTools(accessToken) {
       }
 
       res.on("data", async (chunk) => {
-        const text = chunk.toString();
+        buffer += chunk.toString();
         
-        // Only trigger once
-        if (!handshakeStarted && text.includes("event: endpoint")) {
-           const lines = text.split("\n");
-           const dataLine = lines.find(l => l.startsWith("data:"));
-           
-           if (dataLine) {
-             handshakeStarted = true;
+        // Parse line-by-line
+        let lineEnd;
+        while ((lineEnd = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.substring(0, lineEnd).trim();
+          buffer = buffer.substring(lineEnd + 1);
+
+          if (line.startsWith("data:")) {
+             const dataStr = line.replace("data:", "").trim();
              
-             const uri = dataLine.replace("data:", "").trim();
-             const postEndpoint = uri.startsWith("http") 
-               ? uri 
-               : `https://asset-management.mcp.cloudinary.com${uri}`;
-             
-             console.log("2. Found Endpoint:", postEndpoint);
-             
-             try {
-               const tools = await performMcpHandshake(postEndpoint, accessToken);
-               resolve(tools);
-             } catch (e) {
-               reject(e);
-             } finally {
-               console.log("7. Closing SSE connection");
-               sseReq.destroy();
+             // --- STAGE 1: Find Endpoint ---
+             if (!handshakeStarted) {
+                 // First message is usually the endpoint URL
+                 if (dataStr.startsWith("/")) {
+                   handshakeStarted = true;
+                   postEndpoint = `https://asset-management.mcp.cloudinary.com${dataStr}`;
+                   console.log("2. Found Endpoint:", postEndpoint);
+                   
+                   try {
+                     // Trigger the handshake requests (fire-and-forget)
+                     await triggerHandshake(postEndpoint, accessToken);
+                   } catch (e) {
+                     reject(e);
+                     sseReq.destroy();
+                   }
+                 }
+             } 
+             // --- STAGE 2: Listen for Tools List ---
+             else {
+                try {
+                   // Attempt to parse every SSE message as JSON
+                   const json = JSON.parse(dataStr);
+                   
+                   // Check if this matches our "tools/list" request ID (2)
+                   if (json.id === 2) {
+                       console.log("6. Tools received via SSE!");
+                       
+                       if (json.error) {
+                           reject(new Error("MCP Error: " + JSON.stringify(json.error)));
+                       } else {
+                           resolve(json.result);
+                       }
+                       
+                       toolsResolved = true;
+                       sseReq.destroy(); // Done!
+                   }
+                } catch (e) {
+                   // Ignore parsing errors (keep-alives, empty lines, etc.)
+                }
              }
-           }
+          }
         }
       });
     });
     
     sseReq.on("error", (err) => {
-        if (!handshakeStarted) reject(err);
+        if (!toolsResolved) reject(err);
     });
     
+    // Safety timeout: If no tools in 10 seconds, abort
+    setTimeout(() => {
+        if (!toolsResolved) {
+            sseReq.destroy();
+            reject(new Error("Timeout: Tools list never arrived via SSE"));
+        }
+    }, 10000);
+
     sseReq.end();
   });
 }
 
-async function performMcpHandshake(endpoint, token) {
+// Fire the handshake requests but do NOT wait for their results (since results come via SSE)
+async function triggerHandshake(endpoint, token) {
   const headers = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${token}`
@@ -121,49 +158,25 @@ async function performMcpHandshake(endpoint, token) {
     },
     id: 1
   });
+  await httpRequest(endpoint, { method: "POST", headers, body: initBody });
 
-  const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
-  
-  // LOGGING: Check Initialize Response
-  if (initRes.status >= 400) {
-      throw new Error(`Init failed (${initRes.status}): ${initRes.body}`);
-  }
-
-  // Step B: Send Initialized Notification
+  // Step B: Initialized Notification
   console.log("4. Sending initialized notification...");
   await httpRequest(endpoint, { 
     method: "POST", 
     headers, 
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
   });
-  // We ignore response here as it's often empty or "Accepted"
 
-  // Step C: List Tools
+  // Step C: List Tools (Request ID: 2)
   console.log("5. Sending tools/list...");
   const listBody = JSON.stringify({
     jsonrpc: "2.0",
     method: "tools/list",
     id: 2
   });
-
-  const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
-  
-  console.log("6. Tools response received. Status:", listRes.status);
-  
-  try {
-      return JSON.parse(listRes.body);
-  } catch (e) {
-      // ENHANCED ERROR: Return full body + status + headers for debugging
-      console.error("Failed to parse tools list body:", listRes.body);
-      
-      const debugInfo = JSON.stringify({
-          status: listRes.status,
-          headers: listRes.headers,
-          body_preview: listRes.body // Returns FULL body now
-      }, null, 2);
-      
-      throw new Error(`Failed to parse tools list. Response from server:\n${debugInfo}`);
-  }
+  await httpRequest(endpoint, { method: "POST", headers, body: listBody });
+  // We stop here. The result will appear on the SSE stream processed by fetchMcpTools
 }
 
 // --- Routes ---
@@ -214,6 +227,7 @@ app.post("/exchange", async (req, res) => {
   }
 });
 
+// Original POST endpoint
 app.post("/list-tools", async (req, res) => {
   const { access_token } = req.body;
   if (!access_token) return res.status(400).json({ error: "Missing access_token" });
@@ -223,7 +237,21 @@ app.post("/list-tools", async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("MCP Error:", err);
-    // Send full error message to frontend
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// NEW: GET Endpoint for easy testing
+// Usage: /list-tools?token=YOUR_ACCESS_TOKEN
+app.get("/list-tools", async (req, res) => {
+  const access_token = req.query.token;
+  if (!access_token) return res.status(400).json({ error: "Missing token query param" });
+
+  try {
+    const result = await fetchMcpTools(access_token);
+    res.json(result);
+  } catch (err) {
+    console.error("MCP Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
