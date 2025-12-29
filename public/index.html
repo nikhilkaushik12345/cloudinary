@@ -6,22 +6,15 @@
 <title>Cloudinary MCP Explorer</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; background: #f9f9f9; }
-  h1, h2 { color: #333; }
-  button { padding: 12px 24px; font-size: 16px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 5px; transition: background 0.2s; }
+  h1 { color: #111; }
+  .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+  button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 5px; }
   button:hover { background: #0051a2; }
   button:disabled { background: #ccc; cursor: not-allowed; }
-  
-  .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-  pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; overflow-x: auto; border-radius: 6px; font-size: 14px; max-height: 400px; }
-  
-  .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-bottom: 10px; }
-  .status-success { background: #e6fffa; color: #0070f3; border: 1px solid #0070f3; }
-  .status-error { background: #fff5f5; color: #e53e3e; border: 1px solid #e53e3e; }
-  
-  #tools-section { display: none; }
+  pre { background: #2d2d2d; color: #eee; padding: 15px; border-radius: 6px; overflow-x: auto; max-height: 500px; font-size: 14px; }
 </style>
 <script>
-let currentAccessToken = null;
+let accessToken = null;
 
 function login() {
   const authUrl =
@@ -35,8 +28,8 @@ function login() {
 }
 
 async function exchangeCode(code) {
-  const log = document.getElementById("token-log");
-  log.textContent = "Exchanging code for token...";
+  const log = document.getElementById("auth-log");
+  log.textContent = "Exchanging code...";
   
   try {
     const res = await fetch("/exchange", {
@@ -44,16 +37,13 @@ async function exchangeCode(code) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code })
     });
-
     const data = await res.json();
     
-    if (res.ok && data.access_token) {
-      currentAccessToken = data.access_token;
-      log.textContent = JSON.stringify(data, null, 2);
-      
-      // Show tools section
+    if (data.access_token) {
+      accessToken = data.access_token;
+      log.textContent = "Token Received!\n" + JSON.stringify(data, null, 2);
       document.getElementById("tools-section").style.display = "block";
-      document.getElementById("login-section").style.display = "none";
+      document.getElementById("login-btn").style.display = "none";
     } else {
       log.textContent = "Error: " + JSON.stringify(data, null, 2);
     }
@@ -63,64 +53,49 @@ async function exchangeCode(code) {
 }
 
 async function listTools() {
-  if (!currentAccessToken) return alert("No access token!");
-  
   const log = document.getElementById("tools-log");
   const btn = document.getElementById("list-btn");
   
   btn.disabled = true;
-  btn.textContent = "Fetching Tools via MCP Protocol...";
-  log.textContent = "Connecting to SSE stream and handshaking...";
+  btn.textContent = "Connecting to MCP...";
+  log.textContent = "Starting MCP handshake...";
 
   try {
     const res = await fetch("/list-tools", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: currentAccessToken })
+      body: JSON.stringify({ access_token: accessToken })
     });
-
     const data = await res.json();
     log.textContent = JSON.stringify(data, null, 2);
   } catch (err) {
-    log.textContent = "Error fetching tools: " + err.message;
+    log.textContent = "Error: " + err.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = "List MCP Tools";
+    btn.textContent = "List Tools Again";
   }
 }
 
 window.onload = () => {
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get('code');
-  
-  if (code) {
-    document.getElementById("login-btn").style.display = "none";
-    exchangeCode(code);
-  }
+  const code = new URLSearchParams(window.location.search).get('code');
+  if (code) exchangeCode(code);
 };
 </script>
 </head>
 <body>
   <h1>Cloudinary MCP Explorer</h1>
 
-  <div id="login-section" class="section">
-    <h2>1. Authentication</h2>
-    <p>Login to acquire an access token.</p>
-    <button id="login-btn" onclick="login()">Login with Cloudinary</button>
-  </div>
-
   <div class="section">
-    <h2>2. Access Token</h2>
-    <pre id="token-log">Waiting for login...</pre>
+    <h2>1. Authentication</h2>
+    <button id="login-btn" onclick="login()">Login with Cloudinary</button>
+    <pre id="auth-log">Waiting for login...</pre>
   </div>
 
-  <div id="tools-section" class="section">
-    <h2>3. MCP Tools</h2>
-    <p>Use the token to connect to the MCP server via SSE and list available tools.</p>
+  <div id="tools-section" class="section" style="display:none;">
+    <h2>2. MCP Tools</h2>
+    <p>Click below to connect to the MCP server and list available tools.</p>
     <button id="list-btn" onclick="listTools()">List MCP Tools</button>
-    <br><br>
     <pre id="tools-log">Tools will appear here...</pre>
   </div>
-
 </body>
 </html>
