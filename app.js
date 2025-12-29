@@ -45,62 +45,62 @@ function httpRequest(url, options = {}) {
 async function fetchMcpTools(accessToken) {
   return new Promise((resolve, reject) => {
     const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
-    console.log("1. Starting SSE connection to:", sseUrl);
+    console.log("1. Starting SSE connection...");
 
-    let handshakeStarted = false; // Prevent multiple triggers
+    let handshakeStarted = false; // Prevent double execution
+    let sseReq; // Reference to the request object
 
-    const req = https.request(sseUrl, {
+    sseReq = https.request(sseUrl, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "text/event-stream",
         "Cache-Control": "no-cache",
-        "User-Agent": "Mozilla/5.0 (compatible; CloudinaryMcpClient/1.0)"
+        "User-Agent": "Node-MCP-Client/1.0"
       }
     }, (res) => {
       if (res.statusCode !== 200) {
-        return reject(new Error(`SSE Connect failed with status: ${res.statusCode}`));
+        return reject(new Error(`SSE Connect failed: ${res.statusCode}`));
       }
 
       res.on("data", async (chunk) => {
         const text = chunk.toString();
         
-        // Look for the endpoint event
+        // Only process the first endpoint event
         if (!handshakeStarted && text.includes("event: endpoint")) {
            const lines = text.split("\n");
            const dataLine = lines.find(l => l.startsWith("data:"));
            
            if (dataLine) {
-             handshakeStarted = true; // Lock it so we don't try twice
+             handshakeStarted = true; // Lock
              
              const uri = dataLine.replace("data:", "").trim();
              const postEndpoint = uri.startsWith("http") 
                ? uri 
                : `https://asset-management.mcp.cloudinary.com${uri}`;
              
-             console.log("2. Found MCP Endpoint:", postEndpoint);
+             console.log("2. Found Endpoint:", postEndpoint);
              
-             // CRITICAL FIX: We perform the handshake *inside* the SSE callback
-             // and ONLY destroy the connection AFTER we have the tools.
              try {
+               // Perform handshake WHILE keeping SSE open
                const tools = await performMcpHandshake(postEndpoint, accessToken);
-               resolve(tools); // Send data back to frontend
+               resolve(tools);
              } catch (e) {
                reject(e);
              } finally {
-               console.log("7. Closing SSE connection.");
-               req.destroy(); // NOW it is safe to close
+               console.log("7. Closing SSE connection");
+               sseReq.destroy(); // Close only after success/fail
              }
            }
         }
       });
     });
     
-    req.on("error", (err) => {
+    sseReq.on("error", (err) => {
         if (!handshakeStarted) reject(err);
     });
     
-    req.end();
+    sseReq.end();
   });
 }
 
@@ -111,7 +111,7 @@ async function performMcpHandshake(endpoint, token) {
   };
 
   // Step A: Initialize
-  console.log("3. Sending 'initialize'...");
+  console.log("3. Sending initialize...");
   const initBody = JSON.stringify({
     jsonrpc: "2.0",
     method: "initialize",
@@ -124,13 +124,10 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
-  
-  if (initRes.status >= 400) {
-      throw new Error(`Initialize failed: ${initRes.body}`);
-  }
+  if (initRes.status >= 400) throw new Error(`Init failed: ${initRes.body}`);
 
   // Step B: Send Initialized Notification
-  console.log("4. Sending 'notifications/initialized'...");
+  console.log("4. Sending initialized notification...");
   await httpRequest(endpoint, { 
     method: "POST", 
     headers, 
@@ -138,7 +135,7 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   // Step C: List Tools
-  console.log("5. Sending 'tools/list'...");
+  console.log("5. Sending tools/list...");
   const listBody = JSON.stringify({
     jsonrpc: "2.0",
     method: "tools/list",
@@ -146,8 +143,6 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
-  console.log("6. Tools received!");
-  
   return JSON.parse(listRes.body);
 }
 
@@ -157,11 +152,10 @@ app.get("/callback", (req, res) => {
   res.redirect("/?code=" + req.query.code);
 });
 
-// Exchange code for access token
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
-    if (!code) return res.status(400).json({ error: "Missing authorization code" });
+    if (!code) return res.status(400).json({ error: "Missing code" });
 
     const params = new URLSearchParams();
     params.append("grant_type", "authorization_code");
@@ -184,11 +178,7 @@ app.post("/exchange", async (req, res) => {
     });
 
     if (tokenResp.status >= 400 || tokenResp.body.trim().startsWith("<")) {
-       return res.status(502).json({
-         error: "Token exchange failed",
-         status: tokenResp.status,
-         raw_response: tokenResp.body.substring(0, 500)
-       });
+       return res.status(502).json({ error: "Token exchange failed", raw: tokenResp.body.substring(0, 300) });
     }
 
     const tokenData = JSON.parse(tokenResp.body);
@@ -204,7 +194,6 @@ app.post("/exchange", async (req, res) => {
   }
 });
 
-// New Endpoint: List Tools
 app.post("/list-tools", async (req, res) => {
   const { access_token } = req.body;
   if (!access_token) return res.status(400).json({ error: "Missing access_token" });
@@ -213,7 +202,7 @@ app.post("/list-tools", async (req, res) => {
     const result = await fetchMcpTools(access_token);
     res.json(result);
   } catch (err) {
-    console.error("MCP Tool List Error:", err);
+    console.error("MCP Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
