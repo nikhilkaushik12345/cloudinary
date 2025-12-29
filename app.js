@@ -21,7 +21,6 @@ app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
 
-    // URL-encoded body for Cloudinary token endpoint
     const params = new URLSearchParams();
     params.append("grant_type", "authorization_code");
     params.append("code", code);
@@ -30,7 +29,6 @@ app.post("/exchange", async (req, res) => {
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
-    // Send POST request to Cloudinary token endpoint
     const tokenRes = await fetch("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
       headers: {
@@ -40,7 +38,15 @@ app.post("/exchange", async (req, res) => {
       body: params.toString()
     });
 
-    const token = await tokenRes.json();
+    const text = await tokenRes.text(); // parse as text first
+
+    let token;
+    try {
+      token = JSON.parse(text); // try JSON parse
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to parse JSON from Cloudinary", raw: text });
+    }
+
     if (!token.access_token) return res.status(400).json(token);
 
     // Example API call using the access token
