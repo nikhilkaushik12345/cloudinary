@@ -1,222 +1,126 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import https from "https";
-import zlib from "zlib";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
-
-// --- Helper: Standard HTTP Request ---
-function httpRequest(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url);
-    const req = https.request({
-      protocol: u.protocol,
-      hostname: u.hostname,
-      port: u.port || 443,
-      path: u.pathname + u.search,
-      method: options.method || "GET",
-      headers: options.headers || {},
-    }, (resp) => {
-      const chunks = [];
-      resp.on("data", (d) => chunks.push(d));
-      resp.on("end", () => {
-        const buf = Buffer.concat(chunks);
-        resolve({
-          status: resp.statusCode,
-          headers: resp.headers,
-          body: buf.toString("utf8")
-        });
-      });
-    });
-    req.on("error", reject);
-    if (options.body) req.write(options.body);
-    req.end();
-  });
-}
-
-// --- Helper: Connect to MCP and List Tools ---
-async function fetchMcpTools(accessToken) {
-  return new Promise((resolve, reject) => {
-    const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
-    console.log("1. Starting SSE connection to:", sseUrl);
-
-    let handshakeStarted = false; // Prevent multiple triggers
-
-    const req = https.request(sseUrl, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "User-Agent": "Mozilla/5.0 (compatible; CloudinaryMcpClient/1.0)"
-      }
-    }, (res) => {
-      if (res.statusCode !== 200) {
-        return reject(new Error(`SSE Connect failed with status: ${res.statusCode}`));
-      }
-
-      res.on("data", async (chunk) => {
-        const text = chunk.toString();
-        
-        // Look for the endpoint event
-        if (!handshakeStarted && text.includes("event: endpoint")) {
-           const lines = text.split("\n");
-           const dataLine = lines.find(l => l.startsWith("data:"));
-           
-           if (dataLine) {
-             handshakeStarted = true; // Lock it so we don't try twice
-             
-             const uri = dataLine.replace("data:", "").trim();
-             const postEndpoint = uri.startsWith("http") 
-               ? uri 
-               : `https://asset-management.mcp.cloudinary.com${uri}`;
-             
-             console.log("2. Found MCP Endpoint:", postEndpoint);
-             
-             // CRITICAL FIX: We perform the handshake *inside* the SSE callback
-             // and ONLY destroy the connection AFTER we have the tools.
-             try {
-               const tools = await performMcpHandshake(postEndpoint, accessToken);
-               resolve(tools); // Send data back to frontend
-             } catch (e) {
-               reject(e);
-             } finally {
-               console.log("7. Closing SSE connection.");
-               req.destroy(); // NOW it is safe to close
-             }
-           }
-        }
-      });
-    });
-    
-    req.on("error", (err) => {
-        if (!handshakeStarted) reject(err);
-    });
-    
-    req.end();
-  });
-}
-
-async function performMcpHandshake(endpoint, token) {
-  const headers = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${token}`
-  };
-
-  // Step A: Initialize
-  console.log("3. Sending 'initialize'...");
-  const initBody = JSON.stringify({
-    jsonrpc: "2.0",
-    method: "initialize",
-    params: {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "test-client", version: "1.0" }
-    },
-    id: 1
-  });
-
-  const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloudinary MCP Explorer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; background: #f9f9f9; }
+  h1, h2 { color: #333; }
+  button { padding: 12px 24px; font-size: 16px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 5px; transition: background 0.2s; }
+  button:hover { background: #0051a2; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
   
-  if (initRes.status >= 400) {
-      throw new Error(`Initialize failed: ${initRes.body}`);
-  }
-
-  // Step B: Send Initialized Notification
-  console.log("4. Sending 'notifications/initialized'...");
-  await httpRequest(endpoint, { 
-    method: "POST", 
-    headers, 
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
-  });
-
-  // Step C: List Tools
-  console.log("5. Sending 'tools/list'...");
-  const listBody = JSON.stringify({
-    jsonrpc: "2.0",
-    method: "tools/list",
-    id: 2
-  });
-
-  const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
-  console.log("6. Tools received!");
+  .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; overflow-x: auto; border-radius: 6px; font-size: 14px; max-height: 400px; }
   
-  return JSON.parse(listRes.body);
+  .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-bottom: 10px; }
+  .status-success { background: #e6fffa; color: #0070f3; border: 1px solid #0070f3; }
+  .status-error { background: #fff5f5; color: #e53e3e; border: 1px solid #e53e3e; }
+  
+  #tools-section { display: none; }
+</style>
+<script>
+let currentAccessToken = null;
+
+function login() {
+  const authUrl =
+    "https://asset-management.mcp.cloudinary.com/authorize" +
+    "?client_id=mcp_client_Qr1NLTYTBYCOYW4h" +
+    "&redirect_uri=" + encodeURIComponent("https://cloudinary-2w50.onrender.com/callback") +
+    "&response_type=code" +
+    "&code_challenge=KvifpPaokX4NX3fTbLxnhhpXPZdxx-7k2asvNG_SdbI" +
+    "&code_challenge_method=S256";
+  window.location.href = authUrl;
 }
 
-// --- Routes ---
-
-app.get("/callback", (req, res) => {
-  res.redirect("/?code=" + req.query.code);
-});
-
-// Exchange code for access token
-app.post("/exchange", async (req, res) => {
+async function exchangeCode(code) {
+  const log = document.getElementById("token-log");
+  log.textContent = "Exchanging code for token...";
+  
   try {
-    const { code } = req.body;
-    if (!code) return res.status(400).json({ error: "Missing authorization code" });
-
-    const params = new URLSearchParams();
-    params.append("grant_type", "authorization_code");
-    params.append("code", code);
-    params.append("redirect_uri", "https://cloudinary-2w50.onrender.com/callback");
-    params.append("client_id", "mcp_client_Qr1NLTYTBYCOYW4h");
-    params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
-    params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
-    const body = params.toString();
-
-    const tokenResp = await httpRequest("https://asset-management.mcp.cloudinary.com/token", {
+    const res = await fetch("/exchange", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0",
-        "Content-Length": Buffer.byteLength(body)
-      },
-      body
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code })
     });
 
-    if (tokenResp.status >= 400 || tokenResp.body.trim().startsWith("<")) {
-       return res.status(502).json({
-         error: "Token exchange failed",
-         status: tokenResp.status,
-         raw_response: tokenResp.body.substring(0, 500)
-       });
+    const data = await res.json();
+    
+    if (res.ok && data.access_token) {
+      currentAccessToken = data.access_token;
+      log.textContent = JSON.stringify(data, null, 2);
+      
+      // Show tools section
+      document.getElementById("tools-section").style.display = "block";
+      document.getElementById("login-section").style.display = "none";
+    } else {
+      log.textContent = "Error: " + JSON.stringify(data, null, 2);
     }
-
-    const tokenData = JSON.parse(tokenResp.body);
-    res.json({
-      success: true,
-      access_token: tokenData.access_token,
-      expires_in: tokenData.expires_in,
-      scope: tokenData.scope
-    });
-
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    log.textContent = "Network Error: " + err.message;
   }
-});
+}
 
-// New Endpoint: List Tools
-app.post("/list-tools", async (req, res) => {
-  const { access_token } = req.body;
-  if (!access_token) return res.status(400).json({ error: "Missing access_token" });
+async function listTools() {
+  if (!currentAccessToken) return alert("No access token!");
+  
+  const log = document.getElementById("tools-log");
+  const btn = document.getElementById("list-btn");
+  
+  btn.disabled = true;
+  btn.textContent = "Fetching Tools via MCP Protocol...";
+  log.textContent = "Connecting to SSE stream and handshaking...";
 
   try {
-    const result = await fetchMcpTools(access_token);
-    res.json(result);
-  } catch (err) {
-    console.error("MCP Tool List Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
+    const res = await fetch("/list-tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: currentAccessToken })
+    });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Running on port", PORT));
+    const data = await res.json();
+    log.textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    log.textContent = "Error fetching tools: " + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "List MCP Tools";
+  }
+}
+
+window.onload = () => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  
+  if (code) {
+    document.getElementById("login-btn").style.display = "none";
+    exchangeCode(code);
+  }
+};
+</script>
+</head>
+<body>
+  <h1>Cloudinary MCP Explorer</h1>
+
+  <div id="login-section" class="section">
+    <h2>1. Authentication</h2>
+    <p>Login to acquire an access token.</p>
+    <button id="login-btn" onclick="login()">Login with Cloudinary</button>
+  </div>
+
+  <div class="section">
+    <h2>2. Access Token</h2>
+    <pre id="token-log">Waiting for login...</pre>
+  </div>
+
+  <div id="tools-section" class="section">
+    <h2>3. MCP Tools</h2>
+    <p>Use the token to connect to the MCP server via SSE and list available tools.</p>
+    <button id="list-btn" onclick="listTools()">List MCP Tools</button>
+    <br><br>
+    <pre id="tools-log">Tools will appear here...</pre>
+  </div>
+
+</body>
+</html>
