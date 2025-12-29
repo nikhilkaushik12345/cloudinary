@@ -28,9 +28,15 @@ async function getAccessToken(code) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code })
     });
+
     const data = await res.json();
-    document.getElementById("authorization-code").textContent = "Access Token Processed";
-    document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+    if (res.ok) {
+      document.getElementById("authorization-code").textContent = "Access Token Processed";
+      document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+    } else {
+      document.getElementById("authorization-code").textContent = "Error: " + (data.error || "Unknown error");
+      document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+    }
   } catch (err) {
     document.getElementById("authorization-code").textContent = "Error: " + err;
   }
