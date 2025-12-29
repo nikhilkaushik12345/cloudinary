@@ -47,8 +47,8 @@ async function fetchMcpTools(accessToken) {
     const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
     console.log("1. Starting SSE connection...");
 
-    let handshakeStarted = false; // Prevent double execution
-    let sseReq; // Reference to the request object
+    let handshakeStarted = false;
+    let sseReq;
 
     sseReq = https.request(sseUrl, {
       method: "GET",
@@ -66,13 +66,12 @@ async function fetchMcpTools(accessToken) {
       res.on("data", async (chunk) => {
         const text = chunk.toString();
         
-        // Only process the first endpoint event
         if (!handshakeStarted && text.includes("event: endpoint")) {
            const lines = text.split("\n");
            const dataLine = lines.find(l => l.startsWith("data:"));
            
            if (dataLine) {
-             handshakeStarted = true; // Lock
+             handshakeStarted = true;
              
              const uri = dataLine.replace("data:", "").trim();
              const postEndpoint = uri.startsWith("http") 
@@ -82,14 +81,13 @@ async function fetchMcpTools(accessToken) {
              console.log("2. Found Endpoint:", postEndpoint);
              
              try {
-               // Perform handshake WHILE keeping SSE open
                const tools = await performMcpHandshake(postEndpoint, accessToken);
                resolve(tools);
              } catch (e) {
                reject(e);
              } finally {
                console.log("7. Closing SSE connection");
-               sseReq.destroy(); // Close only after success/fail
+               sseReq.destroy();
              }
            }
         }
@@ -126,13 +124,14 @@ async function performMcpHandshake(endpoint, token) {
   const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
   if (initRes.status >= 400) throw new Error(`Init failed: ${initRes.body}`);
 
-  // Step B: Send Initialized Notification
+  // Step B: Send Initialized Notification (FIXED: Don't parse JSON)
   console.log("4. Sending initialized notification...");
   await httpRequest(endpoint, { 
     method: "POST", 
     headers, 
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
   });
+  // Note: We intentionally IGNORE the response body here because it might be "Accepted"
 
   // Step C: List Tools
   console.log("5. Sending tools/list...");
@@ -143,7 +142,13 @@ async function performMcpHandshake(endpoint, token) {
   });
 
   const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
-  return JSON.parse(listRes.body);
+  
+  // Handle non-JSON response for tools list too, just in case
+  try {
+      return JSON.parse(listRes.body);
+  } catch (e) {
+      throw new Error(`Failed to parse tools list: ${listRes.body.substring(0, 100)}...`);
+  }
 }
 
 // --- Routes ---
