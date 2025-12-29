@@ -11,6 +11,8 @@
   button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 5px; }
   button:hover { background: #0051a2; }
   button:disabled { background: #ccc; cursor: not-allowed; }
+  button.danger { background: #d93025; }
+  button.danger:hover { background: #b02015; }
   pre { background: #2d2d2d; color: #eee; padding: 15px; border-radius: 6px; overflow-x: auto; max-height: 500px; font-size: 14px; }
 </style>
 <script>
@@ -42,8 +44,7 @@ async function exchangeCode(code) {
     if (data.access_token) {
       accessToken = data.access_token;
       log.textContent = "Token Received!\n" + JSON.stringify(data, null, 2);
-      document.getElementById("tools-section").style.display = "block";
-      document.getElementById("cleanup-section").style.display = "block"; // Show cleanup section
+      document.getElementById("cleanup-section").style.display = "block"; // Show cleanup immediately
       document.getElementById("login-btn").style.display = "none";
     } else {
       log.textContent = "Error: " + JSON.stringify(data, null, 2);
@@ -53,38 +54,13 @@ async function exchangeCode(code) {
   }
 }
 
-async function listTools() {
-  const log = document.getElementById("tools-log");
-  const btn = document.getElementById("list-btn");
-  
-  btn.disabled = true;
-  btn.textContent = "Connecting to MCP...";
-  log.textContent = "Starting MCP handshake...";
-
-  try {
-    const res = await fetch("/list-tools", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: accessToken })
-    });
-    const data = await res.json();
-    log.textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    log.textContent = "Error: " + err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "List Tools Again";
-  }
-}
-
-// NEW: Cleanup Function
 async function runCleanup() {
   const log = document.getElementById("cleanup-log");
   const btn = document.getElementById("cleanup-btn");
   
   btn.disabled = true;
   btn.textContent = "Running Cleanup...";
-  log.textContent = "Searching for folders and deleting...";
+  log.textContent = "Searching for folders and deleting them one by one...";
 
   try {
     const res = await fetch("/cleanup-folders", {
@@ -117,18 +93,10 @@ window.onload = () => {
     <pre id="auth-log">Waiting for login...</pre>
   </div>
 
-  <div id="tools-section" class="section" style="display:none;">
-    <h2>2. MCP Tools</h2>
-    <p>Click below to connect to the MCP server and list available tools.</p>
-    <button id="list-btn" onclick="listTools()">List MCP Tools</button>
-    <pre id="tools-log">Tools will appear here...</pre>
-  </div>
-
-  <!-- NEW SECTION ADDED BELOW -->
   <div id="cleanup-section" class="section" style="display:none;">
-    <h2>3. Cleanup Folders</h2>
+    <h2>2. Folder Cleanup</h2>
     <p>Search for all folders and delete them sequentially.</p>
-    <button id="cleanup-btn" onclick="runCleanup()" style="background: #d93025;">Delete All Folders</button>
+    <button id="cleanup-btn" class="danger" onclick="runCleanup()">Search & Delete All Folders</button>
     <pre id="cleanup-log">Waiting...</pre>
   </div>
 
