@@ -3,14 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Login with Cloudinary</title>
+<title>Cloudinary MCP Login</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+  pre { background: #f4f4f4; padding: 10px; overflow-x: auto; border-radius: 4px; }
+  .error { color: red; background: #ffe6e6; padding: 10px; border-radius: 4px; }
+  .success { color: green; font-weight: bold; }
+  button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+</style>
 <script>
-function getAuthorizationCodeFromUrl() {
-  const urlParams = new URLSearchParams(window.location.search);
-  return urlParams.get('code');
-}
-
-function loginWithCloudinary() {
+function login() {
   const authUrl =
     "https://asset-management.mcp.cloudinary.com/authorize" +
     "?client_id=mcp_client_Qr1NLTYTBYCOYW4h" +
@@ -21,7 +23,12 @@ function loginWithCloudinary() {
   window.location.href = authUrl;
 }
 
-async function getAccessToken(code) {
+async function exchangeCode(code) {
+  const statusEl = document.getElementById("status");
+  const resultEl = document.getElementById("result");
+  
+  statusEl.textContent = "Exchanging code for token...";
+  
   try {
     const res = await fetch("/exchange", {
       method: "POST",
@@ -30,34 +37,43 @@ async function getAccessToken(code) {
     });
 
     const data = await res.json();
+    
     if (res.ok) {
-      document.getElementById("authorization-code").textContent = "Access Token Processed";
-      document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+      statusEl.className = "success";
+      statusEl.textContent = "Token Received Successfully!";
+      resultEl.textContent = JSON.stringify(data, null, 2);
     } else {
-      document.getElementById("authorization-code").textContent = "Error: " + (data.error || "Unknown error");
-      document.getElementById("user-info").textContent = JSON.stringify(data, null, 2);
+      statusEl.className = "error";
+      statusEl.textContent = "Error: " + (data.error || "Unknown error");
+      resultEl.textContent = JSON.stringify(data, null, 2);
     }
   } catch (err) {
-    document.getElementById("authorization-code").textContent = "Error: " + err;
+    statusEl.className = "error";
+    statusEl.textContent = "Network Error: " + err.message;
   }
 }
 
 window.onload = () => {
-  const code = getAuthorizationCodeFromUrl();
-  if (!code) {
-    loginWithCloudinary();
-    return;
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  
+  if (code) {
+    document.getElementById("login-btn").style.display = "none";
+    document.getElementById("code-display").textContent = "Code: " + code;
+    exchangeCode(code);
   }
-  document.getElementById("authorization-code").textContent = "Authorization Code: " + code;
-  getAccessToken(code);
 };
 </script>
 </head>
 <body>
-<h1>Login with Cloudinary</h1>
-<button onclick="loginWithCloudinary()">Login</button>
-<p id="authorization-code"></p>
-<h2>User Information</h2>
-<pre id="user-info"></pre>
+  <h1>Cloudinary MCP OAuth</h1>
+  
+  <button id="login-btn" onclick="login()">Login with Cloudinary</button>
+  
+  <div id="code-display" style="margin: 10px 0; font-family: monospace;"></div>
+  <div id="status"></div>
+  
+  <h3>Token Response:</h3>
+  <pre id="result">Waiting for login...</pre>
 </body>
 </html>
