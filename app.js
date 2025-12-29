@@ -12,58 +12,145 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Only allow POST for /exchange
-app.all("/exchange", (req, res, next) => {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed. Use POST with JSON body." });
-  }
-  next();
-});
-
-// OAuth callback
-app.get("/callback", (req, res) => {
-  res.redirect("/?code=" + req.query.code);
-});
-
-// Helper for robust HTTPS requests
-function httpRequest(url, { method = "GET", headers = {}, body = "" } = {}) {
+// --- Helper: Standard HTTP Request ---
+function httpRequest(url, options = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const req = https.request(
-      {
-        protocol: u.protocol,
-        hostname: u.hostname,
-        port: u.port || 443,
-        path: u.pathname + u.search,
-        method,
-        headers,
-      },
-      (resp) => {
-        const chunks = [];
-        resp.on("data", (d) => chunks.push(d));
-        resp.on("end", () => {
-          let buf = Buffer.concat(chunks);
-          const enc = (resp.headers["content-encoding"] || "").toLowerCase();
-          try {
-            if (enc === "gzip") buf = zlib.gunzipSync(buf);
-            else if (enc === "br") buf = zlib.brotliDecompressSync(buf);
-            else if (enc === "deflate") buf = zlib.inflateSync(buf);
-          } catch (_) {}
-          resolve({
-            status: resp.statusCode || 0,
-            headers: resp.headers,
-            text: buf.toString("utf8"),
-          });
+    const req = https.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + u.search,
+      method: options.method || "GET",
+      headers: options.headers || {},
+    }, (resp) => {
+      const chunks = [];
+      resp.on("data", (d) => chunks.push(d));
+      resp.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        resolve({
+          status: resp.statusCode,
+          headers: resp.headers,
+          body: buf.toString("utf8")
         });
-      }
-    );
+      });
+    });
     req.on("error", reject);
-    if (body) req.write(body);
+    if (options.body) req.write(options.body);
     req.end();
   });
 }
 
-// Exchange code for access token - RETURNS TOKEN ONLY
+// --- Helper: Connect to MCP and List Tools ---
+async function fetchMcpTools(accessToken) {
+  return new Promise((resolve, reject) => {
+    const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
+    
+    console.log("1. Starting SSE connection to:", sseUrl);
+
+    const req = https.request(sseUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache"
+      }
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        return reject(new Error(`SSE Connect failed with status: ${res.statusCode}`));
+      }
+
+      res.on("data", async (chunk) => {
+        const text = chunk.toString();
+        // Check for the endpoint event
+        if (text.includes("event: endpoint")) {
+           const lines = text.split("\n");
+           const dataLine = lines.find(l => l.startsWith("data:"));
+           
+           if (dataLine) {
+             const uri = dataLine.replace("data:", "").trim();
+             // Construct full URL
+             const postEndpoint = uri.startsWith("http") 
+               ? uri 
+               : `https://asset-management.mcp.cloudinary.com${uri}`;
+             
+             console.log("2. Found MCP Endpoint:", postEndpoint);
+             
+             // Stop listening to SSE once we have the endpoint
+             req.destroy(); 
+             
+             // Perform the handshake
+             try {
+               const tools = await performMcpHandshake(postEndpoint, accessToken);
+               resolve(tools);
+             } catch (e) {
+               reject(e);
+             }
+           }
+        }
+      });
+    });
+    
+    req.on("error", (err) => {
+        console.error("SSE Request Error:", err);
+        reject(err);
+    });
+    
+    req.end();
+  });
+}
+
+async function performMcpHandshake(endpoint, token) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+  };
+
+  // Step A: Initialize
+  console.log("3. Sending 'initialize'...");
+  const initBody = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "1.0" }
+    },
+    id: 1
+  });
+
+  const initRes = await httpRequest(endpoint, { method: "POST", headers, body: initBody });
+  if (initRes.status >= 400) throw new Error(`Initialize failed: ${initRes.body}`);
+
+  // Step B: Send Initialized Notification
+  console.log("4. Sending 'notifications/initialized'...");
+  await httpRequest(endpoint, { 
+    method: "POST", 
+    headers, 
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) 
+  });
+
+  // Step C: List Tools
+  console.log("5. Sending 'tools/list'...");
+  const listBody = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "tools/list",
+    id: 2
+  });
+
+  const listRes = await httpRequest(endpoint, { method: "POST", headers, body: listBody });
+  console.log("6. Tools received!");
+  
+  return JSON.parse(listRes.body);
+}
+
+// --- Routes ---
+
+app.get("/callback", (req, res) => {
+  res.redirect("/?code=" + req.query.code);
+});
+
+// Exchange code for access token
 app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
@@ -79,7 +166,6 @@ app.post("/exchange", async (req, res) => {
 
     const body = params.toString();
 
-    // 1. Fetch Access Token
     const tokenResp = await httpRequest("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
       headers: {
@@ -91,34 +177,39 @@ app.post("/exchange", async (req, res) => {
       body
     });
 
-    // Handle token errors
-    if (tokenResp.status >= 400 || tokenResp.text.trim().startsWith("<")) {
-       return res.status(tokenResp.status).json({
+    if (tokenResp.status >= 400 || tokenResp.body.trim().startsWith("<")) {
+       return res.status(502).json({
          error: "Token exchange failed",
          status: tokenResp.status,
-         raw_response: tokenResp.text.substring(0, 500)
+         raw_response: tokenResp.body.substring(0, 500)
        });
     }
 
-    let tokenData;
-    try {
-      tokenData = JSON.parse(tokenResp.text);
-    } catch (e) {
-      return res.status(502).json({ error: "Invalid JSON from token endpoint", raw: tokenResp.text });
-    }
-
-    // 2. SUCCESS: Return the token immediately
-    // Do NOT call folders API here anymore
+    const tokenData = JSON.parse(tokenResp.body);
+    
+    // Return access token only
     res.json({
       success: true,
       access_token: tokenData.access_token,
       expires_in: tokenData.expires_in,
-      scope: tokenData.scope,
-      token_type: tokenData.token_type,
-      // refresh_token: tokenData.refresh_token // Optional: include if needed
+      scope: tokenData.scope
     });
 
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// New Endpoint: List Tools
+app.post("/list-tools", async (req, res) => {
+  const { access_token } = req.body;
+  if (!access_token) return res.status(400).json({ error: "Missing access_token" });
+
+  try {
+    const result = await fetchMcpTools(access_token);
+    res.json(result);
+  } catch (err) {
+    console.error("MCP Tool List Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
