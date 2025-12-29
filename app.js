@@ -11,6 +11,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// --- Helper: Standard HTTP Request ---
 function httpRequest(url, options = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -28,6 +29,7 @@ function httpRequest(url, options = {}) {
   });
 }
 
+// --- Helper: Generic MCP Tool Runner ---
 async function runMcpTool(accessToken, toolName, toolArgs) {
   return new Promise((resolve, reject) => {
     const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
@@ -65,6 +67,8 @@ async function runMcpTool(accessToken, toolName, toolArgs) {
   });
 }
 
+// --- Routes ---
+
 app.get("/callback", (req, res) => res.redirect("/?code=" + req.query.code));
 
 app.post("/exchange", async (req, res) => {
@@ -75,39 +79,6 @@ app.post("/exchange", async (req, res) => {
     if (r.status >= 400 || r.body.startsWith("<")) return res.status(502).json({ error: "Token failed", raw: r.body });
     res.json(JSON.parse(r.body));
   } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post("/list-tools", async (req, res) => {
-  // Reusing generic tool runner logic but adapted for 'list'
-  try {
-     const result = await new Promise((resolve, reject) => {
-        const sseUrl = "https://asset-management.mcp.cloudinary.com/sse";
-        let handshakeStarted = false, sseReq, toolResolved = false, buffer = "";
-        sseReq = https.request(sseUrl, { method: "GET", headers: { "Authorization": `Bearer ${req.body.access_token}`, "Accept": "text/event-stream" } }, (r) => {
-             r.on("data", async (c) => {
-                buffer += c.toString();
-                let idx; while ((idx = buffer.indexOf("\n")) !== -1) {
-                    const line = buffer.substring(0, idx).trim(); buffer = buffer.substring(idx+1);
-                    if (line.startsWith("data:")) {
-                        const d = line.replace("data:", "").trim();
-                        if (!handshakeStarted && d.startsWith("/")) {
-                            handshakeStarted = true;
-                            const ep = `https://asset-management.mcp.cloudinary.com${d}`;
-                             const h = { "Content-Type": "application/json", "Authorization": `Bearer ${req.body.access_token}` };
-                             await httpRequest(ep, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1.0" } }, id: 1 }) });
-                             await httpRequest(ep, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
-                             await httpRequest(ep, { method: "POST", headers: h, body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 2 }) });
-                        } else {
-                            try { const j = JSON.parse(d); if (j.id === 2) { resolve(j.result); toolResolved = true; sseReq.destroy(); } } catch (e) {}
-                        }
-                    }
-                }
-             });
-        });
-        sseReq.end();
-    });
-    res.json(result);
-  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/cleanup-folders", async (req, res) => {
