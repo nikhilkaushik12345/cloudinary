@@ -21,29 +21,29 @@ app.post("/exchange", async (req, res) => {
   try {
     const { code } = req.body;
 
+    // URL-encoded body for Cloudinary token endpoint
     const params = new URLSearchParams();
     params.append("grant_type", "authorization_code");
     params.append("code", code);
-
-    // Updated redirect_uri for new client
     params.append("redirect_uri", "https://cloudinary-2w50.onrender.com/callback");
-
-    // Updated client credentials
     params.append("client_id", "mcp_client_Qr1NLTYTBYCOYW4h");
     params.append("client_secret", "Jx6xTdLwssnpROUP2vEJH87MpJ2tVbhi");
     params.append("code_verifier", "gYaIzhzrbl8A2oVjPajNZdnVDioMvYI29w9oKWOqMlY");
 
-    // 1️⃣ Exchange authorization code for access token
+    // Send POST request to Cloudinary token endpoint
     const tokenRes = await fetch("https://asset-management.mcp.cloudinary.com/token", {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+      },
       body: params.toString()
     });
 
     const token = await tokenRes.json();
     if (!token.access_token) return res.status(400).json(token);
 
-    // 2️⃣ Example: list folder (you can adjust this to your MCP API request)
+    // Example API call using the access token
     const folderRes = await fetch("https://asset-management.mcp.cloudinary.com/v1/folders", {
       method: "GET",
       headers: {
